@@ -323,7 +323,7 @@ async function sendNotification(request, response){
   const emailPayload = {
     service_id: 'service_l85mxv9',
     template_id: 'template_t3zh2eo',
-    user_id: 'I2Mb3rlA5Q_owv9ry',
+    user_id: 'RJtxHXs3X0FxtE9iN',
     accessToken: emailjsAccessToken,
     template_params: {
       to_email: body.guardianEmail?.trim() || 'johnalfredico@gmail.com',
