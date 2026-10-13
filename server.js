@@ -201,6 +201,172 @@ async function sendViolationSms(request, response){
   }
 }
 
+async function sendNotification(request, response){
+  if(request.method !== 'POST'){
+    response.setHeader('Allow', 'POST');
+    return sendJson(response, 405, {error: 'Method not allowed.'});
+  }
+
+  const authorization = request.headers.authorization || '';
+  const tokenMatch = authorization.match(/^Bearer\s+(.+)$/i);
+  if(!tokenMatch) return sendJson(response, 401, {error: 'Authentication required.'});
+
+  let user;
+  try{
+    user = await getAuth().verifyIdToken(tokenMatch[1]);
+  }catch(error){
+    return sendJson(response, 401, {error: 'Authentication failed.'});
+  }
+
+  let role;
+  try{
+    role = await getAuthorizedRole(tokenMatch[1], user.uid);
+  }catch(error){
+    console.error('Could not verify notification sender role:', error.message);
+    return sendJson(response, 503, {error: 'Could not verify notification sender permissions.'});
+  }
+  if(!allowedRoles.has(role)) return sendJson(response, 403, {error: 'Permission denied.'});
+
+  let body;
+  try{
+    body = await readJsonBody(request);
+  }catch(error){
+    return sendJson(response, 400, {error: error.message});
+  }
+  if(!body || typeof body !== 'object' || Array.isArray(body)){
+    return sendJson(response, 400, {error: 'Request body must be a JSON object.'});
+  }
+  if(!Number.isInteger(body.totalViolations) || body.totalViolations < warningLimit){
+    return sendJson(response, 400, {error: 'Notifications are only sent for the 4th or later violation.'});
+  }
+  if(body.studentName !== undefined &&
+    (typeof body.studentName !== 'string' || body.studentName.length > 120)){
+    return sendJson(response, 400, {error: 'Student name must be a valid string.'});
+  }
+  if(body.studentId !== undefined &&
+    (typeof body.studentId !== 'string' || body.studentId.length > 80)){
+    return sendJson(response, 400, {error: 'Student ID must be a valid string.'});
+  }
+  if(body.guardianEmail !== undefined &&
+    (typeof body.guardianEmail !== 'string' || body.guardianEmail.length > 254)){
+    return sendJson(response, 400, {error: 'Guardian email must be a valid string.'});
+  }
+  if(body.latestViolationText !== undefined &&
+    (typeof body.latestViolationText !== 'string' || body.latestViolationText.length > 1000)){
+    return sendJson(response, 400, {error: 'Latest violation text must be a valid string.'});
+  }
+  const phoneNumbers = [];
+  if(body.phoneNumbers !== undefined){
+    if(!Array.isArray(body.phoneNumbers) || body.phoneNumbers.length > 2 ||
+      body.phoneNumbers.some(phone => typeof phone !== 'string' || phone.length > 40)){
+      return sendJson(response, 400, {error: 'One or two valid phone numbers may be provided.'});
+    }
+    phoneNumbers.push(...body.phoneNumbers);
+  }
+  if(body.phoneNumber !== undefined){
+    if(typeof body.phoneNumber !== 'string' || body.phoneNumber.length > 40){
+      return sendJson(response, 400, {error: 'Phone number must be a valid string.'});
+    }
+    if(body.phoneNumber.trim()) phoneNumbers.push(body.phoneNumber);
+  }
+  const uniquePhoneNumbers = [...new Set(phoneNumbers.map(phone => phone.trim()).filter(Boolean))];
+  if(uniquePhoneNumbers.length > 2){
+    return sendJson(response, 400, {error: 'No more than two phone numbers may be provided.'});
+  }
+
+  const studentName = body.studentName?.trim() || 'Student';
+  const latestViolationText = body.latestViolationText?.trim() || 'Violation Recorded';
+  const message = body.totalViolations === warningLimit
+    ? `Warning: ${studentName} has reached 4 violations. Latest violation: ${latestViolationText}. Please contact the school.`
+    : `Status update: ${studentName} has reached 5 or more violations. Scholarship status: VOID.`;
+  const result = {
+    sms: {sent: 0, total: uniquePhoneNumbers.length},
+    email: {sent: false}
+  };
+
+  if(uniquePhoneNumbers.length){
+    try{
+      for(const phoneNumber of uniquePhoneNumbers){
+        const smsResponse = await fetch(iprogSmsEndpoint, {
+          method: 'POST',
+          headers: {'Content-Type': 'application/x-www-form-urlencoded'},
+          body: new URLSearchParams({
+            api_token: iprogApiToken,
+            phone_number: phoneNumber,
+            message
+          })
+        });
+        const responseText = await smsResponse.text();
+        let providerResult;
+        try{
+          providerResult = JSON.parse(responseText);
+        }catch(error){
+          providerResult = null;
+        }
+        const providerStatus = providerResult?.status;
+        const providerSucceeded = providerStatus === 'success' || providerStatus === 200 || providerStatus === '200';
+        if(!smsResponse.ok || !providerSucceeded){
+          throw new Error(providerResult?.message || `IPROG returned HTTP ${smsResponse.status}.`);
+        }
+        result.sms.sent += 1;
+      }
+    }catch(error){
+      result.sms.error = error.message;
+      console.error('IPROG SMS notification failed:', error);
+    }
+  }else{
+    result.sms.error = 'No student or parent/guardian phone number is on file.';
+  }
+
+  const isVoided = body.totalViolations >= violationLimit;
+  const emailPayload = {
+    service_id: 'service_l85mxv9',
+    template_id: 'template_t3zh2eo',
+    user_id: 'I2Mb3rlA5Q_owv9ry',
+    template_params: {
+      to_email: body.guardianEmail?.trim() || 'johnalfredico@gmail.com',
+      student_name: studentName,
+      student_id: body.studentId?.trim() || 'N/A',
+      total_violations: body.totalViolations,
+      latest_violation: latestViolationText,
+      date_logged: new Date().toLocaleDateString(),
+      subject: isVoided
+        ? `CRITICAL NOTICE: Scholarship Voided (5th Violation) - ${studentName}`
+        : `URGENT: 4th School Violation Warning - ${studentName}`,
+      notice_title: isVoided
+        ? 'OFFICIAL NOTICE OF SCHOLARSHIP VOIDANCE'
+        : '4th School Violation Warning Notice',
+      notice_message: isVoided
+        ? 'This official notice informs you that your child/ward has reached 5 school violations. Per STI College Dagupan policy, their SCHOLARSHIP IS OFFICIALLY VOIDED effective immediately.'
+        : 'This official notice informs you that your child/ward has accumulated 4 school violations. Reaching 5 violations will result in the IMMEDIATE VOIDING of their scholarship/financial assistance.',
+      action_required: isVoided
+        ? 'An urgent disciplinary conference is scheduled. Please report to the Guidance Office immediately.'
+        : 'Please accompany your child/ward to the Guidance Office within 24 hours to address these recorded violations.'
+    }
+  };
+  try{
+    const emailResponse = await fetch('https://api.emailjs.com/api/v1.0/email/send', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify(emailPayload)
+    });
+    if(!emailResponse.ok){
+      const errorText = await emailResponse.text();
+      throw new Error(`EmailJS returned HTTP ${emailResponse.status}: ${errorText}`);
+    }
+    result.email.sent = true;
+  }catch(error){
+    result.email.error = error.message;
+    console.error('EmailJS notification failed:', error);
+  }
+
+  const allSent = result.email.sent && result.sms.sent === result.sms.total && result.sms.total > 0;
+  if(allSent){
+    return sendJson(response, 200, result);
+  }
+  return sendJson(response, 502, {error: 'One or more notifications could not be sent.', ...result});
+}
+
 async function serveStaticFile(request, response, pathname){
   let decodedPath;
   try{
@@ -257,6 +423,17 @@ const server = http.createServer(async (request, response) => {
       return response.end();
     }
     return sendViolationSms(request, response);
+  }
+  if(url.pathname === '/send-notification'){
+    setCorsHeaders(request, response);
+    if(request.method === 'OPTIONS'){
+      if(request.headers.origin && !allowedOrigins.includes('*') && !allowedOrigins.includes(request.headers.origin)){
+        return sendJson(response, 403, {error: 'Origin not allowed.'});
+      }
+      response.writeHead(204);
+      return response.end();
+    }
+    return sendNotification(request, response);
   }
   if(request.method !== 'GET' && request.method !== 'HEAD'){
     response.setHeader('Allow', 'GET, HEAD');
