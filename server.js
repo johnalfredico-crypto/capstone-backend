@@ -6,6 +6,7 @@ const {getAuth} = require('firebase-admin/auth');
 
 const projectId = process.env.FIREBASE_PROJECT_ID;
 const iprogApiToken = process.env.IPROG_API_TOKEN;
+const emailjsAccessToken = process.env.EMAILJS_ACCESS_TOKEN;
 const port = Number(process.env.PORT || 10000);
 const root = __dirname;
 const allowedOrigins = (process.env.CORS_ORIGINS || '*')
@@ -323,6 +324,7 @@ async function sendNotification(request, response){
     service_id: 'service_l85mxv9',
     template_id: 'template_t3zh2eo',
     user_id: 'I2Mb3rlA5Q_owv9ry',
+    accessToken: emailjsAccessToken,
     template_params: {
       to_email: body.guardianEmail?.trim() || 'johnalfredico@gmail.com',
       student_name: studentName,
@@ -344,20 +346,25 @@ async function sendNotification(request, response){
         : 'Please accompany your child/ward to the Guidance Office within 24 hours to address these recorded violations.'
     }
   };
-  try{
-    const emailResponse = await fetch('https://api.emailjs.com/api/v1.0/email/send', {
-      method: 'POST',
-      headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify(emailPayload)
-    });
-    if(!emailResponse.ok){
-      const errorText = await emailResponse.text();
-      throw new Error(`EmailJS returned HTTP ${emailResponse.status}: ${errorText}`);
+  if(!emailjsAccessToken?.trim()){
+    result.email.error = 'EMAILJS_ACCESS_TOKEN is not configured.';
+    console.error(result.email.error);
+  }else{
+    try{
+      const emailResponse = await fetch('https://api.emailjs.com/api/v1.0/email/send', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify(emailPayload)
+      });
+      if(!emailResponse.ok){
+        const errorText = await emailResponse.text();
+        throw new Error(`EmailJS returned HTTP ${emailResponse.status}: ${errorText}`);
+      }
+      result.email.sent = true;
+    }catch(error){
+      result.email.error = error.message;
+      console.error('EmailJS notification failed:', error);
     }
-    result.email.sent = true;
-  }catch(error){
-    result.email.error = error.message;
-    console.error('EmailJS notification failed:', error);
   }
 
   const allSent = result.email.sent && result.sms.sent === result.sms.total && result.sms.total > 0;
