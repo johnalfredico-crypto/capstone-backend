@@ -167,16 +167,31 @@ async function sendViolationSms(request, response){
     for(const phoneNumber of phoneNumbers){
       const smsResponse = await fetch(iprogSmsEndpoint, {
         method: 'POST',
-        headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify({
+        headers: {'Content-Type': 'application/x-www-form-urlencoded'},
+        body: new URLSearchParams({
           api_token: process.env.IPROG_API_TOKEN,
           phone_number: phoneNumber,
           message
         })
       });
-      if(!smsResponse.ok){
-        console.error('IPROG SMS request failed with status:', smsResponse.status);
-        return sendJson(response, 502, {error: 'IPROG could not send the violation SMS.'});
+      const responseText = await smsResponse.text();
+      let providerResult;
+      try{
+        providerResult = JSON.parse(responseText);
+      }catch(error){
+        providerResult = null;
+      }
+      const providerStatus = providerResult?.status;
+      const providerSucceeded = providerStatus === 'success' || providerStatus === 200 || providerStatus === '200';
+      if(!smsResponse.ok || !providerSucceeded){
+        console.error('IPROG SMS request failed:', {
+          httpStatus: smsResponse.status,
+          providerStatus,
+          message: providerResult?.message || responseText.slice(0, 500)
+        });
+        return sendJson(response, 502, {
+          error: providerResult?.message || 'IPROG could not send the violation SMS.'
+        });
       }
     }
     return sendJson(response, 200, {sent: phoneNumbers.length});
