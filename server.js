@@ -129,20 +129,30 @@ function formatLocalPhoneNumber(value){
   if(!/^[+\d\s().-]+$/.test(phoneNumber)) return null;
   let digits = phoneNumber.replace(/\D/g, '');
   if(digits.startsWith('63') && digits.length === 12){
-    digits = `0${digits.slice(2)}`;
+    // Already in 63 format
   }else if(digits.length === 10 && digits.startsWith('9')){
-    digits = `0${digits}`;
+    digits = `63${digits}`;
+  }else if(digits.startsWith('09') && digits.length === 11){
+    digits = `63${digits.slice(1)}`;
   }
-  return /^09\d{9}$/.test(digits) ? digits : null;
+  return /^639\d{9}$/.test(digits) ? digits : null;
 }
 
 async function sendIprogSms(phoneNumber, message){
+  const token = process.env.IPROG_API_TOKEN.trim();
+  const formattedNumber = formatLocalPhoneNumber(phoneNumber) || phoneNumber;
+  const queryParams = new URLSearchParams({
+    api_token: token,
+    message,
+    phone_number: formattedNumber
+  }).toString();
+  const endpoint = `${iprogSmsEndpoint}?${queryParams}`;
   const payload = {
-    api_token: process.env.IPROG_API_TOKEN.trim(),
-    phone_number: phoneNumber,
+    api_token: token,
+    phone_number: formattedNumber,
     message
   };
-  const smsResponse = await fetch(iprogSmsEndpoint, {
+  const smsResponse = await fetch(endpoint, {
     method: 'POST',
     headers: {'Content-Type': 'application/json'},
     body: JSON.stringify(payload)
@@ -163,7 +173,8 @@ async function sendIprogSms(phoneNumber, message){
     providerStatus === '200';
   if(!smsResponse.ok || !providerSucceeded){
     const error = new Error(
-      responseData?.message || `IPROG returned HTTP ${smsResponse.status}.`
+      (typeof responseData === 'object' && responseData?.message) ||
+        `IPROG returned HTTP ${smsResponse.status}.`
     );
     error.response = {data: responseData, status: smsResponse.status};
     throw error;
