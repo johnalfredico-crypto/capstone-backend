@@ -149,22 +149,27 @@ async function sendIprogSms(phoneNumber, message){
     throw new Error(`Invalid phone number format: ${phoneNumber}`);
   }
 
-  console.log(`[SMS Debug] Sending to formatted number: ${formattedNumber} using token length: ${token.length}`);
-
   const queryParams = new URLSearchParams({
     api_token: token,
     phone_number: formattedNumber,
     message
-  });
-  const endpoint = `https://www.iprogsms.com/api/v1/sms_messages?${queryParams.toString()}`;
-
+  }).toString();
+  const endpoint = `https://www.iprogsms.com/api/v1/sms_messages?${queryParams}`;
+  const payload = {
+    api_token: token,
+    phone_number: formattedNumber,
+    message
+  };
   try{
     const smsResponse = await fetch(endpoint, {
       method: 'POST',
-      headers: {'Accept': 'application/json'}
+      headers: {
+        'Content-Type': 'application/json',
+        'Accept': 'application/json'
+      },
+      body: JSON.stringify(payload)
     });
     const responseText = await smsResponse.text();
-    console.log('[SMS Debug] Raw IPROG Response:', responseText);
 
     let responseData;
     try{
@@ -172,10 +177,18 @@ async function sendIprogSms(phoneNumber, message){
     }catch(error){
       responseData = {message: responseText};
     }
+    console.log('[IPROG Response]:', responseData);
 
-    if(!smsResponse.ok){
+    const providerStatus = responseData && typeof responseData === 'object'
+      ? responseData.status
+      : undefined;
+    const providerSucceeded = providerStatus === undefined ||
+      providerStatus === 'success' ||
+      providerStatus === 200 ||
+      providerStatus === '200';
+    if(!smsResponse.ok || !providerSucceeded){
       const error = new Error(
-        responseData.message || `HTTP error! status: ${smsResponse.status}`
+        responseData.message || `IPROG failed with status ${smsResponse.status}.`
       );
       error.response = {data: responseData, status: smsResponse.status};
       throw error;
