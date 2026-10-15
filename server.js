@@ -201,8 +201,11 @@ async function sendIprogSms(phoneNumber, message){
 
     return responseData;
   }catch(error){
-    console.error('[SMS Fetch Error]:', error.message);
-    const smsError = new Error(`IPROG SMS failed: ${error.message}`);
+    const errorMessage = controller.signal.aborted
+      ? 'IPROG request timed out after 8 seconds.'
+      : error.message;
+    console.error('[SMS Fetch Error]:', errorMessage);
+    const smsError = new Error(`IPROG SMS failed: ${errorMessage}`);
     if(error.response) smsError.response = error.response;
     throw smsError;
   }finally{
@@ -361,7 +364,8 @@ async function sendNotification(request, response){
       result.sms.sent = 1;
       console.log('[SMS Result for Guardian]:', smsResult);
     }catch(error){
-      result.sms.error = 'IPROG SMS request failed.';
+      result.sms.error = error.message || 'IPROG SMS request failed.';
+      if(error.response?.status) result.sms.httpStatus = error.response.status;
       logIprogSmsError('IPROG SMS notification failed:', error);
     }
   }else{
