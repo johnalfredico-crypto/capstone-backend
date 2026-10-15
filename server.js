@@ -124,6 +124,61 @@ function validateSmsRequest(body){
   return null;
 }
 
+function formatLocalPhoneNumber(value){
+  const phoneNumber = String(value ?? '').trim();
+  if(!/^[+\d\s().-]+$/.test(phoneNumber)) return null;
+  let digits = phoneNumber.replace(/\D/g, '');
+  if(digits.startsWith('63') && digits.length === 12){
+    digits = `0${digits.slice(2)}`;
+  }else if(digits.length === 10 && digits.startsWith('9')){
+    digits = `0${digits}`;
+  }
+  return /^09\d{9}$/.test(digits) ? digits : null;
+}
+
+async function sendIprogSms(phoneNumber, message){
+  const payload = {
+    api_token: process.env.IPROG_API_TOKEN.trim(),
+    phone_number: phoneNumber,
+    message
+  };
+  const smsResponse = await fetch(iprogSmsEndpoint, {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify(payload)
+  });
+  const responseText = await smsResponse.text();
+  let responseData;
+  try{
+    responseData = JSON.parse(responseText);
+  }catch(error){
+    responseData = responseText;
+  }
+
+  const providerStatus = responseData && typeof responseData === 'object'
+    ? responseData.status
+    : undefined;
+  const providerSucceeded = providerStatus === 'success' ||
+    providerStatus === 200 ||
+    providerStatus === '200';
+  if(!smsResponse.ok || !providerSucceeded){
+    const error = new Error(
+      responseData?.message || `IPROG returned HTTP ${smsResponse.status}.`
+    );
+    error.response = {data: responseData, status: smsResponse.status};
+    throw error;
+  }
+  return responseData;
+}
+
+function logIprogSmsError(context, error){
+  console.error(context, {
+    message: error?.message || String(error),
+    responseData: error?.response?.data,
+    responseStatus: error?.response?.status
+  });
+}
+
 async function sendViolationSms(request, response){
   if(request.method !== 'POST'){
     response.setHeader('Allow', 'POST');
@@ -159,46 +214,28 @@ async function sendViolationSms(request, response){
   const validationError = validateSmsRequest(body);
   if(validationError) return sendJson(response, 400, {error: validationError});
 
+  const phoneNumbers = body.phoneNumbers.map(formatLocalPhoneNumber);
+  if(phoneNumbers.some(phoneNumber => !phoneNumber)){
+    return sendJson(response, 400, {
+      error: 'Phone numbers must be valid 11-digit local numbers (09xxxxxxxxx).'
+    });
+  }
+
   const message = body.violationCount === warningLimit
     ? `Warning: ${body.studentName.trim()} has reached 4 violations. Latest violation: ${body.violationType.trim()}. Please contact the school.`
     : `Status update: ${body.studentName.trim()} has reached 5 or more violations. Scholarship status: VOID.`;
-  const phoneNumbers = [...new Set(body.phoneNumbers.map(phone => phone.trim()))];
+  const uniquePhoneNumbers = [...new Set(phoneNumbers)];
 
+  let sent = 0;
   try{
-    for(const phoneNumber of phoneNumbers){
-      const smsResponse = await fetch(iprogSmsEndpoint, {
-        method: 'POST',
-        headers: {'Content-Type': 'application/x-www-form-urlencoded'},
-        body: new URLSearchParams({
-          api_token: process.env.IPROG_API_TOKEN,
-          phone_number: phoneNumber,
-          message
-        })
-      });
-      const responseText = await smsResponse.text();
-      let providerResult;
-      try{
-        providerResult = JSON.parse(responseText);
-      }catch(error){
-        providerResult = null;
-      }
-      const providerStatus = providerResult?.status;
-      const providerSucceeded = providerStatus === 'success' || providerStatus === 200 || providerStatus === '200';
-      if(!smsResponse.ok || !providerSucceeded){
-        console.error('IPROG SMS request failed:', {
-          httpStatus: smsResponse.status,
-          providerStatus,
-          message: providerResult?.message || responseText.slice(0, 500)
-        });
-        return sendJson(response, 502, {
-          error: providerResult?.message || 'IPROG could not send the violation SMS.'
-        });
-      }
+    for(const phoneNumber of uniquePhoneNumbers){
+      await sendIprogSms(phoneNumber, message);
+      sent += 1;
     }
-    return sendJson(response, 200, {sent: phoneNumbers.length});
+    return sendJson(response, 200, {sent, total: uniquePhoneNumbers.length});
   }catch(error){
-    console.error('IPROG SMS request failed:', error);
-    return sendJson(response, 502, {error: 'IPROG SMS request failed.'});
+    logIprogSmsError('IPROG SMS request failed:', error);
+    return sendJson(response, 502, {error: 'IPROG SMS request failed.', sent, total: uniquePhoneNumbers.length});
   }
 }
 
@@ -270,8 +307,15 @@ async function sendNotification(request, response){
     }
     if(body.phoneNumber.trim()) phoneNumbers.push(body.phoneNumber);
   }
-  const uniquePhoneNumbers = [...new Set(phoneNumbers.map(phone => phone.trim()).filter(Boolean))];
-  if(uniquePhoneNumbers.length > 2){
+  const nonEmptyPhoneNumbers = [...new Set(phoneNumbers.map(phone => phone.trim()).filter(Boolean))];
+  const uniquePhoneNumbers = nonEmptyPhoneNumbers.map(formatLocalPhoneNumber);
+  if(uniquePhoneNumbers.some(phoneNumber => !phoneNumber)){
+    return sendJson(response, 400, {
+      error: 'Phone numbers must be valid 11-digit local numbers (09xxxxxxxxx).'
+    });
+  }
+  const formattedPhoneNumbers = [...new Set(uniquePhoneNumbers)];
+  if(formattedPhoneNumbers.length > 2){
     return sendJson(response, 400, {error: 'No more than two phone numbers may be provided.'});
   }
 
@@ -281,39 +325,19 @@ async function sendNotification(request, response){
     ? `Warning: ${studentName} has reached 4 violations. Latest violation: ${latestViolationText}. Please contact the school.`
     : `Status update: ${studentName} has reached 5 or more violations. Scholarship status: VOID.`;
   const result = {
-    sms: {sent: 0, total: uniquePhoneNumbers.length},
+    sms: {sent: 0, total: formattedPhoneNumbers.length},
     email: {sent: false}
   };
 
-  if(uniquePhoneNumbers.length){
+  if(formattedPhoneNumbers.length){
     try{
-      for(const phoneNumber of uniquePhoneNumbers){
-        const smsResponse = await fetch(iprogSmsEndpoint, {
-          method: 'POST',
-          headers: {'Content-Type': 'application/x-www-form-urlencoded'},
-          body: new URLSearchParams({
-            api_token: iprogApiToken,
-            phone_number: phoneNumber,
-            message
-          })
-        });
-        const responseText = await smsResponse.text();
-        let providerResult;
-        try{
-          providerResult = JSON.parse(responseText);
-        }catch(error){
-          providerResult = null;
-        }
-        const providerStatus = providerResult?.status;
-        const providerSucceeded = providerStatus === 'success' || providerStatus === 200 || providerStatus === '200';
-        if(!smsResponse.ok || !providerSucceeded){
-          throw new Error(providerResult?.message || `IPROG returned HTTP ${smsResponse.status}.`);
-        }
+      for(const phoneNumber of formattedPhoneNumbers){
+        await sendIprogSms(phoneNumber, message);
         result.sms.sent += 1;
       }
     }catch(error){
-      result.sms.error = error.message;
-      console.error('IPROG SMS notification failed:', error);
+      result.sms.error = 'IPROG SMS request failed.';
+      logIprogSmsError('IPROG SMS notification failed:', error);
     }
   }else{
     result.sms.error = 'No student or parent/guardian phone number is on file.';
