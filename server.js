@@ -160,6 +160,9 @@ async function sendIprogSms(phoneNumber, message){
     phone_number: formattedNumber,
     message
   };
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), 8000);
+
   try{
     const smsResponse = await fetch(endpoint, {
       method: 'POST',
@@ -167,9 +170,12 @@ async function sendIprogSms(phoneNumber, message){
         'Content-Type': 'application/json',
         'Accept': 'application/json'
       },
-      body: JSON.stringify(payload)
+      body: JSON.stringify(payload),
+      signal: controller.signal
     });
     const responseText = await smsResponse.text();
+    console.log('[IPROG Response Status]:', smsResponse.status);
+    console.log('[IPROG Response Body]:', responseText);
 
     let responseData;
     try{
@@ -177,7 +183,6 @@ async function sendIprogSms(phoneNumber, message){
     }catch(error){
       responseData = {message: responseText};
     }
-    console.log('[IPROG Response]:', responseData);
 
     const providerStatus = responseData && typeof responseData === 'object'
       ? responseData.status
@@ -188,7 +193,7 @@ async function sendIprogSms(phoneNumber, message){
       providerStatus === '200';
     if(!smsResponse.ok || !providerSucceeded){
       const error = new Error(
-        responseData.message || `IPROG failed with status ${smsResponse.status}.`
+        responseData.message || `IPROG error status ${smsResponse.status}.`
       );
       error.response = {data: responseData, status: smsResponse.status};
       throw error;
@@ -196,8 +201,12 @@ async function sendIprogSms(phoneNumber, message){
 
     return responseData;
   }catch(error){
-    console.error('[SMS Error Catch]:', error.message);
-    throw error;
+    console.error('[SMS Fetch Error]:', error.message);
+    const smsError = new Error(`IPROG SMS failed: ${error.message}`);
+    if(error.response) smsError.response = error.response;
+    throw smsError;
+  }finally{
+    clearTimeout(timeoutId);
   }
 }
 
