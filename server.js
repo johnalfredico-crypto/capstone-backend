@@ -155,11 +155,11 @@ async function sendIprogSms(phoneNumber, message){
     message
   }).toString();
   const endpoint = `https://www.iprogsms.com/api/v1/sms_messages?${queryParams}`;
-  const payload = {
+  const params = new URLSearchParams({
     api_token: token,
     phone_number: formattedNumber,
     message
-  };
+  }).toString();
   const controller = new AbortController();
   const timeoutId = setTimeout(() => controller.abort(), 8000);
 
@@ -167,10 +167,10 @@ async function sendIprogSms(phoneNumber, message){
     const smsResponse = await fetch(endpoint, {
       method: 'POST',
       headers: {
-        'Content-Type': 'application/json',
+        'Content-Type': 'application/x-www-form-urlencoded',
         'Accept': 'application/json'
       },
-      body: JSON.stringify(payload),
+      body: params,
       signal: controller.signal
     });
     const responseText = await smsResponse.text();
@@ -421,12 +421,21 @@ async function sendNotification(request, response){
     }
   }
 
-  const allSent = result.email.sent && result.sms.sent === result.sms.total && result.sms.total > 0;
-  if(allSent){
+  // Treat the operation as successful (200) if at least one notification channel succeeded.
+  // Return 502 only when all channels failed.
+  const smsSucceeded = result.sms.total === 0 ? false : (result.sms.sent === result.sms.total && result.sms.total > 0);
+  const emailSucceeded = Boolean(result.email.sent);
+  const overallSuccess = emailSucceeded || smsSucceeded;
+
+  if(overallSuccess){
+    // Return 200 and include partial failure details in the payload (e.g., sms.error)
     return sendJson(response, 200, result);
   }
+
+  // Neither email nor sms succeeded — return 502 with details.
   return sendJson(response, 502, {error: 'One or more notifications could not be sent.', ...result});
 }
+
 
 async function serveStaticFile(request, response, pathname){
   let decodedPath;
