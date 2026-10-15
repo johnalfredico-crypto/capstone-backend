@@ -149,49 +149,43 @@ async function sendIprogSms(phoneNumber, message){
     throw new Error(`Invalid phone number format: ${phoneNumber}`);
   }
 
+  console.log(`[SMS Debug] Sending to formatted number: ${formattedNumber} using token length: ${token.length}`);
+
   const queryParams = new URLSearchParams({
-    api_token: token,
-    message,
-    phone_number: formattedNumber
-  }).toString();
-  const endpoint = `https://www.iprogsms.com/api/v1/sms_messages?${queryParams}`;
-  const payload = {
     api_token: token,
     phone_number: formattedNumber,
     message
-  };
-  const smsResponse = await fetch(endpoint, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'Accept': 'application/json'
-    },
-    body: JSON.stringify(payload)
   });
-  const responseText = await smsResponse.text();
-  let responseData;
-  try{
-    responseData = JSON.parse(responseText);
-  }catch(err){
-    responseData = responseText;
-  }
-  console.log('[IPROG Gateway Response]:', smsResponse.status, responseData);
+  const endpoint = `https://www.iprogsms.com/api/v1/sms_messages?${queryParams.toString()}`;
 
-  const providerStatus = responseData && typeof responseData === 'object'
-    ? responseData.status
-    : undefined;
-  const providerSucceeded = providerStatus === 'success' ||
-    providerStatus === 200 ||
-    providerStatus === '200';
-  if(!smsResponse.ok || !providerSucceeded){
-    const errorDetail = (typeof responseData === 'object' && responseData?.message) || responseText;
-    const error = new Error(
-      `IPROG SMS Gateway Rejected Request (${smsResponse.status}): ${errorDetail}`
-    );
-    error.response = {data: responseData, status: smsResponse.status};
+  try{
+    const smsResponse = await fetch(endpoint, {
+      method: 'POST',
+      headers: {'Accept': 'application/json'}
+    });
+    const responseText = await smsResponse.text();
+    console.log('[SMS Debug] Raw IPROG Response:', responseText);
+
+    let responseData;
+    try{
+      responseData = JSON.parse(responseText);
+    }catch(error){
+      responseData = {message: responseText};
+    }
+
+    if(!smsResponse.ok){
+      const error = new Error(
+        responseData.message || `HTTP error! status: ${smsResponse.status}`
+      );
+      error.response = {data: responseData, status: smsResponse.status};
+      throw error;
+    }
+
+    return responseData;
+  }catch(error){
+    console.error('[SMS Error Catch]:', error.message);
     throw error;
   }
-  return responseData;
 }
 
 function logIprogSmsError(context, error){
