@@ -149,17 +149,12 @@ async function sendIprogSms(phoneNumber, message){
     throw new Error(`Invalid phone number format: ${phoneNumber}`);
   }
 
-  const queryParams = new URLSearchParams({
-    api_token: token,
-    phone_number: formattedNumber,
-    message
-  }).toString();
-  const endpoint = `https://www.iprogsms.com/api/v1/sms_messages?${queryParams}`;
   const params = new URLSearchParams({
     api_token: token,
     phone_number: formattedNumber,
     message
   }).toString();
+  const endpoint = iprogSmsEndpoint;
   const controller = new AbortController();
   const timeoutId = setTimeout(() => controller.abort(), 8000);
 
@@ -167,6 +162,7 @@ async function sendIprogSms(phoneNumber, message){
     const smsResponse = await fetch(endpoint, {
       method: 'POST',
       headers: {
+        'Authorization': `Bearer ${token}`,
         'Content-Type': 'application/x-www-form-urlencoded',
         'Accept': 'application/json'
       },
@@ -187,8 +183,7 @@ async function sendIprogSms(phoneNumber, message){
     const providerStatus = responseData && typeof responseData === 'object'
       ? responseData.status
       : undefined;
-    const providerSucceeded = providerStatus === undefined ||
-      providerStatus === 'success' ||
+    const providerSucceeded = providerStatus === 'success' ||
       providerStatus === 200 ||
       providerStatus === '200';
     if(!smsResponse.ok || !providerSucceeded){
