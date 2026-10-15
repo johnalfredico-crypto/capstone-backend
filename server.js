@@ -304,30 +304,17 @@ async function sendNotification(request, response){
     (typeof body.latestViolationText !== 'string' || body.latestViolationText.length > 1000)){
     return sendJson(response, 400, {error: 'Latest violation text must be a valid string.'});
   }
-  const phoneNumbers = [];
-  if(body.phoneNumbers !== undefined){
-    if(!Array.isArray(body.phoneNumbers) || body.phoneNumbers.length > 2 ||
-      body.phoneNumbers.some(phone => typeof phone !== 'string' || phone.length > 40)){
-      return sendJson(response, 400, {error: 'One or two valid phone numbers may be provided.'});
-    }
-    phoneNumbers.push(...body.phoneNumbers);
+  const guardianPhone = body.parentPhone || body.guardianPhone || body.parentGuardianPhone || '';
+  if(typeof guardianPhone !== 'string' || guardianPhone.length > 40){
+    return sendJson(response, 400, {error: 'Parent/guardian phone number must be a valid string.'});
   }
-  if(body.phoneNumber !== undefined){
-    if(typeof body.phoneNumber !== 'string' || body.phoneNumber.length > 40){
-      return sendJson(response, 400, {error: 'Phone number must be a valid string.'});
-    }
-    if(body.phoneNumber.trim()) phoneNumbers.push(body.phoneNumber);
-  }
-  const nonEmptyPhoneNumbers = [...new Set(phoneNumbers.map(phone => phone.trim()).filter(Boolean))];
-  const uniquePhoneNumbers = nonEmptyPhoneNumbers.map(formatLocalPhoneNumber);
-  if(uniquePhoneNumbers.some(phoneNumber => !phoneNumber)){
+  const formattedGuardianPhone = guardianPhone.trim()
+    ? formatLocalPhoneNumber(guardianPhone)
+    : null;
+  if(guardianPhone.trim() && !formattedGuardianPhone){
     return sendJson(response, 400, {
-      error: 'Phone numbers must be valid 11-digit local numbers (09xxxxxxxxx).'
+      error: 'Parent/guardian phone number must be a valid Philippine mobile number.'
     });
-  }
-  const formattedPhoneNumbers = [...new Set(uniquePhoneNumbers)];
-  if(formattedPhoneNumbers.length > 2){
-    return sendJson(response, 400, {error: 'No more than two phone numbers may be provided.'});
   }
 
   const studentName = body.studentName?.trim() || 'Student';
@@ -336,22 +323,22 @@ async function sendNotification(request, response){
     ? `Warning: ${studentName} has reached 4 violations. Latest violation: ${latestViolationText}. Please contact the school.`
     : `Status update: ${studentName} has reached 5 or more violations. Scholarship status: VOID.`;
   const result = {
-    sms: {sent: 0, total: formattedPhoneNumbers.length},
+    sms: {sent: 0, total: formattedGuardianPhone ? 1 : 0},
     email: {sent: false}
   };
 
-  if(formattedPhoneNumbers.length){
+  if(formattedGuardianPhone){
     try{
-      for(const phoneNumber of formattedPhoneNumbers){
-        await sendIprogSms(phoneNumber, message);
-        result.sms.sent += 1;
-      }
+      const smsResult = await sendIprogSms(formattedGuardianPhone, message);
+      result.sms.sent = 1;
+      console.log('[SMS Result for Guardian]:', smsResult);
     }catch(error){
       result.sms.error = 'IPROG SMS request failed.';
       logIprogSmsError('IPROG SMS notification failed:', error);
     }
   }else{
-    result.sms.error = 'No student or parent/guardian phone number is on file.';
+    result.sms.error = 'No parent/guardian phone number is on file.';
+    console.log('[SMS] No parent/guardian phone number provided.');
   }
 
   const isVoided = body.totalViolations >= violationLimit;
