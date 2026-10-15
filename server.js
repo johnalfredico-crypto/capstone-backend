@@ -1,3 +1,5 @@
+require('dotenv').config();
+
 const fs = require('node:fs');
 const http = require('node:http');
 const path = require('node:path');
@@ -153,8 +155,9 @@ async function sendIprogSms(phoneNumber, message){
     api_token: token,
     phone_number: formattedNumber,
     message
-  }).toString();
-  const endpoint = iprogSmsEndpoint;
+  });
+  const encodedParams = params.toString();
+  const endpoint = `${iprogSmsEndpoint}?${encodedParams}`;
   const controller = new AbortController();
   const timeoutId = setTimeout(() => controller.abort(), 8000);
 
@@ -166,7 +169,7 @@ async function sendIprogSms(phoneNumber, message){
         'Content-Type': 'application/x-www-form-urlencoded',
         'Accept': 'application/json'
       },
-      body: params,
+      body: encodedParams,
       signal: controller.signal
     });
     const responseText = await smsResponse.text();
