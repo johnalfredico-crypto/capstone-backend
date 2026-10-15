@@ -139,14 +139,22 @@ function formatLocalPhoneNumber(value){
 }
 
 async function sendIprogSms(phoneNumber, message){
-  const token = process.env.IPROG_API_TOKEN.trim();
-  const formattedNumber = formatLocalPhoneNumber(phoneNumber) || phoneNumber;
+  const token = (process.env.IPROG_API_TOKEN || '').trim();
+  const formattedNumber = formatLocalPhoneNumber(phoneNumber);
+
+  if(!token){
+    throw new Error('IPROG_API_TOKEN environment variable is missing or empty.');
+  }
+  if(!formattedNumber){
+    throw new Error(`Invalid phone number format: ${phoneNumber}`);
+  }
+
   const queryParams = new URLSearchParams({
     api_token: token,
     message,
     phone_number: formattedNumber
   }).toString();
-  const endpoint = `${iprogSmsEndpoint}?${queryParams}`;
+  const endpoint = `https://www.iprogsms.com/api/v1/sms_messages?${queryParams}`;
   const payload = {
     api_token: token,
     phone_number: formattedNumber,
@@ -154,16 +162,20 @@ async function sendIprogSms(phoneNumber, message){
   };
   const smsResponse = await fetch(endpoint, {
     method: 'POST',
-    headers: {'Content-Type': 'application/json'},
+    headers: {
+      'Content-Type': 'application/json',
+      'Accept': 'application/json'
+    },
     body: JSON.stringify(payload)
   });
   const responseText = await smsResponse.text();
   let responseData;
   try{
     responseData = JSON.parse(responseText);
-  }catch(error){
+  }catch(err){
     responseData = responseText;
   }
+  console.log('[IPROG Gateway Response]:', smsResponse.status, responseData);
 
   const providerStatus = responseData && typeof responseData === 'object'
     ? responseData.status
@@ -172,9 +184,9 @@ async function sendIprogSms(phoneNumber, message){
     providerStatus === 200 ||
     providerStatus === '200';
   if(!smsResponse.ok || !providerSucceeded){
+    const errorDetail = (typeof responseData === 'object' && responseData?.message) || responseText;
     const error = new Error(
-      (typeof responseData === 'object' && responseData?.message) ||
-        `IPROG returned HTTP ${smsResponse.status}.`
+      `IPROG SMS Gateway Rejected Request (${smsResponse.status}): ${errorDetail}`
     );
     error.response = {data: responseData, status: smsResponse.status};
     throw error;
