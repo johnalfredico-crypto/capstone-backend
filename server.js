@@ -331,6 +331,9 @@ async function sendNotification(request, response){
     (typeof body.latestViolationText !== 'string' || body.latestViolationText.length > 1000)){
     return sendJson(response, 400, {error: 'Latest violation text must be a valid string.'});
   }
+  if(body.concern !== undefined && typeof body.concern !== 'string'){
+    return sendJson(response, 400, {error: 'Concern must be a valid string.'});
+  }
   const guardianPhone = body.parentPhone || body.guardianPhone || body.parentGuardianPhone || '';
   if(typeof guardianPhone !== 'string' || guardianPhone.length > 40){
     return sendJson(response, 400, {error: 'Parent/guardian phone number must be a valid string.'});
@@ -346,9 +349,8 @@ async function sendNotification(request, response){
 
   const studentName = body.studentName?.trim() || 'Student';
   const latestViolationText = body.latestViolationText?.trim() || 'Violation Recorded';
-  const message = body.totalViolations === warningLimit
-    ? `Warning: ${studentName} has reached 4 violations. Latest violation: ${latestViolationText}. Please contact the school.`
-    : `Status update: ${studentName} has reached 5 or more violations. Scholarship status: VOID.`;
+  const concern = body.concern?.trim().slice(0, 150) || '';
+  const message = `STI College Dagupan: ${studentName} - ${body.totalViolations === warningLimit ? 'Warning' : 'Scholarship VOID'} (${body.totalViolations} violations). Latest: ${latestViolationText}${concern ? ` - Message for parent: ${concern}.` : ''} Contact Guidance Office.`;
   const result = {
     sms: {sent: 0, total: formattedGuardianPhone ? 1 : 0},
     email: {sent: false}
