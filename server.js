@@ -16,7 +16,10 @@ const allowedOrigins = (process.env.CORS_ORIGINS || '*')
 const iprogSmsEndpoint = 'https://www.iprogsms.com/api/v1/sms_messages';
 const warningLimit = 4;
 const violationLimit = 5;
-const allowedRoles = new Set(['guidance', 'counselor', 'guidance_counselor', 'guidance_office']);
+const allowedRoles = new Set([
+  'guidance', 'counselor', 'guidance_counselor', 'guidance_office',
+  'disciplinary_office', 'discipline_office', 'disciplinary'
+]);
 const mimeTypes = {
   '.css': 'text/css; charset=utf-8',
   '.html': 'text/html; charset=utf-8',
