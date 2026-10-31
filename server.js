@@ -1,8 +1,10 @@
 const fs = require('node:fs');
 const http = require('node:http');
+const os = require('node:os');
 const path = require('node:path');
 const {initializeApp} = require('firebase-admin/app');
 const {getAuth} = require('firebase-admin/auth');
+const {getFirestore} = require('firebase-admin/firestore');
 
 const projectId = process.env.FIREBASE_PROJECT_ID;
 const iprogApiToken = process.env.IPROG_API_TOKEN;
@@ -19,6 +21,10 @@ const violationLimit = 5;
 const allowedRoles = new Set([
   'guidance', 'counselor', 'guidance_counselor', 'guidance_office',
   'disciplinary_office', 'discipline_office', 'disciplinary'
+]);
+const manageableUserRoles = new Set([
+  'super_admin', 'admin', 'academic', 'it_head', 'hm_head', 'tm_head',
+  'faculty', 'guidance', 'disciplinary_office', 'registrar'
 ]);
 const mimeTypes = {
   '.css': 'text/css; charset=utf-8',
@@ -57,6 +63,7 @@ if (!Number.isInteger(port) || port < 1 || port > 65535) {
 if (!allowedOrigins.length) throw new Error('CORS_ORIGINS must contain at least one allowed origin.');
 
 initializeApp({projectId});
+const firestore = getFirestore();
 
 function sendJson(response, status, payload){
   response.writeHead(status, {'Content-Type': 'application/json; charset=utf-8'});
@@ -72,7 +79,7 @@ function setCorsHeaders(request, response){
     response.setHeader('Access-Control-Allow-Origin', origin);
     response.setHeader('Vary', 'Origin');
   }
-  response.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
+  response.setHeader('Access-Control-Allow-Methods', 'GET, PATCH, POST, OPTIONS');
   response.setHeader('Access-Control-Allow-Headers', 'Authorization, Content-Type');
 }
 
@@ -98,10 +105,197 @@ async function getAuthorizedRole(idToken, uid){
   });
   if(!response.ok) throw new Error(`Role lookup failed with status ${response.status}.`);
   const userDocument = await response.json();
-  return String(userDocument.fields?.role?.stringValue || '')
+  return String(
+    userDocument.fields?.role?.stringValue
+      || userDocument.fields?.userType?.stringValue
+      || userDocument.fields?.user_type?.stringValue
+      || userDocument.fields?.type?.stringValue
+      || ''
+  )
     .trim()
     .toLowerCase()
     .replace(/[\s-]+/g, '_');
+}
+
+async function getUserProfile(uid, email=''){
+  const direct = await firestore.collection('users').doc(uid).get();
+  if(direct.exists){
+    const directEmail = String(direct.data()?.email || '').trim().toLowerCase();
+    if(!email || !directEmail || directEmail === email.trim().toLowerCase()) return direct;
+  }
+  if(email){
+    const snapshot = await firestore.collection('users').where('email', '==', email.trim().toLowerCase()).limit(1).get();
+    if(!snapshot.empty) return snapshot.docs[0];
+    const allUsers = await firestore.collection('users').get();
+    return allUsers.docs.find(document=>
+      String(document.data()?.email || '').trim().toLowerCase() === email.trim().toLowerCase()
+    ) || null;
+  }
+  return null;
+}
+
+async function listAllAuthUsers(){
+  const users = [];
+  let pageToken;
+  do{
+    const page = await getAuth().listUsers(1000, pageToken);
+    users.push(...page.users);
+    pageToken = page.pageToken;
+  }while(pageToken);
+  return users;
+}
+
+async function getBearerUser(request){
+  const authorization = request.headers.authorization || '';
+  const tokenMatch = authorization.match(/^Bearer\s+(.+)$/i);
+  if(!tokenMatch) return null;
+  return getAuth().verifyIdToken(tokenMatch[1]);
+}
+
+async function requireSuperAdmin(request, response){
+  let user;
+  try{
+    user = await getBearerUser(request);
+  }catch(error){
+    sendJson(response, 401, {error: 'Authentication failed.'});
+    return null;
+  }
+  if(!user){
+    sendJson(response, 401, {error: 'Authentication required.'});
+    return null;
+  }
+  const userDocument = await getUserProfile(user.uid, user.email || '');
+  if(!userDocument) return sendJson(response, 403, {error: 'No matching Firestore user profile was found.'});
+  const role = String(
+    userDocument.data()?.role
+      || userDocument.data()?.userType
+      || userDocument.data()?.user_type
+      || userDocument.data()?.type
+      || ''
+  ).trim().toLowerCase().replace(/[\s-]+/g, '_');
+  if(role !== 'super_admin'){
+    sendJson(response, 403, {error: 'Super Admin permission is required.'});
+    return null;
+  }
+  return user;
+}
+
+async function listManagedUsers(request, response){
+  if(request.method !== 'GET'){
+    response.setHeader('Allow', 'GET');
+    return sendJson(response, 405, {error: 'Method not allowed.'});
+  }
+  const adminUser = await requireSuperAdmin(request, response);
+  if(!adminUser) return;
+  try{
+    const [authUsers, userSnapshot, studentSnapshot] = await Promise.all([
+      listAllAuthUsers(),
+      firestore.collection('users').get(),
+      firestore.collection('students').get()
+    ]);
+    const profiles = new Map(userSnapshot.docs.map(document=>[document.id, {...document.data(), profileId: document.id}]));
+    const profilesByEmail = new Map(userSnapshot.docs.map(document=>[
+      String(document.data()?.email || '').trim().toLowerCase(),
+      {...document.data(), profileId: document.id}
+    ]).filter(([email])=>email));
+    const reportCounts = new Map();
+    studentSnapshot.docs.forEach(document=>{
+      const violations = document.data()?.violations;
+      if(!Array.isArray(violations)) return;
+      violations.forEach(violation=>{
+        const uid = String(violation.loggedByUid || violation.recordedByUid || '').trim();
+        if(uid) reportCounts.set(uid, (reportCounts.get(uid) || 0) + 1);
+      });
+    });
+    return sendJson(response, 200, {
+      users: (() => {
+        const usersByUid = new Map();
+        authUsers.forEach(user=>{
+          const profile = profiles.get(user.uid) || profilesByEmail.get(String(user.email || '').trim().toLowerCase()) || {};
+          const providers = Array.isArray(user.providerData) ? user.providerData.map(provider=>provider.providerId) : [];
+          usersByUid.set(user.uid, {
+            uid: user.uid,
+            name: profile.name || profile.displayName || user.displayName || user.email || 'Unnamed user',
+            email: user.email || profile.email || '',
+            role: String(profile.role || profile.userType || profile.user_type || profile.type || user.customClaims?.role || 'authenticated_user')
+              .trim().toLowerCase().replace(/[\s-]+/g, '_'),
+            status: user.disabled ? 'Inactive' : 'Active',
+            reportCount: reportCounts.get(user.uid) || 0,
+            authLinked: true,
+            authentication: {
+              passwordConfigured: providers.includes('password'),
+              providers,
+              emailVerified: Boolean(user.emailVerified),
+              createdAt: user.metadata?.creationTime || null,
+              lastSignInAt: user.metadata?.lastSignInTime || null
+            }
+          });
+        });
+        userSnapshot.docs.forEach(document=>{
+          const profile = document.data() || {};
+          const profileEmail = String(profile.email || '').trim().toLowerCase();
+          const authMatch = authUsers.find(user=>user.uid === document.id
+            || (profileEmail && String(user.email || '').trim().toLowerCase() === profileEmail));
+          if(authMatch || usersByUid.has(document.id)) return;
+          usersByUid.set(document.id, {
+            uid: document.id,
+            name: profile.name || profile.displayName || profile.email || 'Unnamed user',
+            email: profile.email || '',
+            role: String(profile.role || profile.userType || profile.user_type || profile.type || 'authenticated_user')
+              .trim().toLowerCase().replace(/[\s-]+/g, '_'),
+            status: profile.status === 'Inactive' ? 'Inactive' : 'Active',
+            reportCount: reportCounts.get(document.id) || 0,
+            authLinked: false,
+            authentication: {
+              passwordConfigured: false,
+              providers: [],
+              emailVerified: false,
+              createdAt: null,
+              lastSignInAt: null
+            }
+          });
+        });
+        return [...usersByUid.values()];
+      })()
+    });
+  }catch(error){
+    console.error('Could not list managed users:', error);
+    return sendJson(response, 500, {error: 'Could not load system users.'});
+  }
+}
+
+async function updateManagedUser(request, response, uid){
+  if(request.method !== 'PATCH'){
+    response.setHeader('Allow', 'PATCH');
+    return sendJson(response, 405, {error: 'Method not allowed.'});
+  }
+
+  const adminUser = await requireSuperAdmin(request, response);
+  if(!adminUser) return;
+  if(!uid || uid === adminUser.uid) return sendJson(response, 400, {error: 'The current Super Admin account cannot be changed here.'});
+  let body;
+  try{
+    body = await readJsonBody(request);
+  }catch(error){
+    return sendJson(response, 400, {error: error.message});
+  }
+  const role = String(body.role || '').trim().toLowerCase().replace(/[\s-]+/g, '_');
+  if(!manageableUserRoles.has(role)){
+    return sendJson(response, 400, {error: 'Invalid user type.'});
+  }
+  if(typeof body.active !== 'boolean'){
+    return sendJson(response, 400, {error: 'Account status must be active or inactive.'});
+  }
+  try{
+    await Promise.all([
+      getAuth().updateUser(uid, {disabled: !body.active}),
+      firestore.collection('users').doc(uid).set({role}, {merge:true})
+    ]);
+    return sendJson(response, 200, {ok: true});
+  }catch(error){
+    console.error('Could not update managed user:', error);
+    return sendJson(response, 500, {error: 'Could not update the user account.'});
+  }
 }
 
 function validateSmsRequest(body){
@@ -506,6 +700,23 @@ const server = http.createServer(async (request, response) => {
     }
     return sendNotification(request, response);
   }
+  if(url.pathname === '/api/admin/users'){
+    setCorsHeaders(request, response);
+    if(request.method === 'OPTIONS'){
+      response.writeHead(204);
+      return response.end();
+    }
+    return listManagedUsers(request, response);
+  }
+  if(url.pathname.startsWith('/api/admin/users/')){
+    setCorsHeaders(request, response);
+    if(request.method === 'OPTIONS'){
+      response.writeHead(204);
+      return response.end();
+    }
+    const uid = decodeURIComponent(url.pathname.slice('/api/admin/users/'.length));
+    return updateManagedUser(request, response, uid);
+  }
   if(request.method !== 'GET' && request.method !== 'HEAD'){
     response.setHeader('Allow', 'GET, HEAD');
     return sendJson(response, 405, {error: 'Method not allowed.'});
@@ -514,5 +725,12 @@ const server = http.createServer(async (request, response) => {
 });
 
 server.listen(port, '0.0.0.0', () => {
-  console.log(`App server listening on 0.0.0.0:${port}`);
+  console.log([
+    `App server listening on 0.0.0.0:${port}`,
+    `Local: http://localhost:${port}`,
+    ...Object.values(os.networkInterfaces())
+      .flat()
+      .filter(details => details && details.family === 'IPv4' && !details.internal)
+      .map(details => `LAN: http://${details.address}:${port}`)
+  ].join('\n'));
 });
