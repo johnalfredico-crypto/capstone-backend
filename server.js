@@ -180,45 +180,6 @@ async function requireSuperAdmin(request, response){
   return user;
 }
 
-async function requireSchoolAdmin(request, response){
-  let user;
-  try{
-    user = await getBearerUser(request);
-  }catch(error){
-    sendJson(response, 401, {error: 'Authentication failed.'});
-    return null;
-  }
-  if(!user){
-    sendJson(response, 401, {error: 'Authentication required.'});
-    return null;
-  }
-  const userDocument = await getUserProfile(user.uid, user.email || '');
-  const role = String(userDocument?.data()?.role || '').trim().toLowerCase().replace(/[\s-]+/g, '_');
-  if(role !== 'admin'){
-    sendJson(response, 403, {error: 'School Administrator permission is required.'});
-    return null;
-  }
-  return user;
-}
-
-async function listAuditTrail(request, response){
-  if(request.method !== 'GET'){
-    response.setHeader('Allow', 'GET');
-    return sendJson(response, 405, {error: 'Method not allowed.'});
-  }
-  const adminUser = await requireSchoolAdmin(request, response);
-  if(!adminUser) return;
-  try{
-    const snapshot = await firestore.collection('auditTrail').orderBy('timestamp', 'desc').limit(500).get();
-    return sendJson(response, 200, {
-      records: snapshot.docs.map(document=>({id:document.id, ...document.data()}))
-    });
-  }catch(error){
-    console.error('Could not load audit trail:', error);
-    return sendJson(response, 500, {error: 'Could not load the audit trail.'});
-  }
-}
-
 async function listManagedUsers(request, response){
   if(request.method !== 'GET'){
     response.setHeader('Allow', 'GET');
@@ -746,14 +707,6 @@ const server = http.createServer(async (request, response) => {
       return response.end();
     }
     return listManagedUsers(request, response);
-  }
-  if(url.pathname === '/api/admin/audit-trail'){
-    setCorsHeaders(request, response);
-    if(request.method === 'OPTIONS'){
-      response.writeHead(204);
-      return response.end();
-    }
-    return listAuditTrail(request, response);
   }
   if(url.pathname.startsWith('/api/admin/users/')){
     setCorsHeaders(request, response);
